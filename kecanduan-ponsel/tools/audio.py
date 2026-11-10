@@ -204,13 +204,29 @@ def scroll_ticks(t0, dur):
 
 
 # ---------------------------------------------------------------- MUSIC ---
-BPM = 110
+# Cheerful, bouncy pop: 124 BPM, D major, I-IV-vi-V, ukulele-style offbeat
+# strums, glockenspiel hook, handclaps + shaker, root-fifth bass.
+BPM = 124
 BEAT = 60 / BPM
 BAR = 4 * BEAT
-# I - V - vi - IV in C major
-CHORDS = [[48, 52, 55, 60, 64], [43, 47, 50, 55, 62], [45, 48, 52, 57, 64], [41, 45, 48, 53, 60]]
-ROOTS = [36, 31, 33, 29]
+CHORDS = [[62, 66, 69, 74], [62, 67, 71, 74], [62, 66, 71, 74], [61, 64, 69, 73]]  # D G Bm A
+ROOTS = [38, 43, 47, 45]
+FIFTHS = [45, 50, 54, 52]
+# glockenspiel hook on an 8th-note grid, 4 bars (None = rest)
+HOOK = [
+    [81, None, 78, None, 74, None, 78, 81],
+    [83, None, 81, None, 79, None, 74, None],
+    [78, None, 83, None, 81, 78, None, 76],
+    [76, None, 73, None, 76, None, None, None],
+]
+HOOK2 = [
+    [74, 76, 78, None, 81, None, 78, None],
+    [79, None, 83, None, 86, None, 83, None],
+    [83, None, 81, 78, None, 74, None, 78],
+    [81, None, None, 76, 73, None, 69, None],
+]
 mf = lambda m: 440 * 2 ** ((m - 69) / 12)
+_cache = {}
 
 
 def add(buf, x, t, g=1.0, pan=0.0):
@@ -224,88 +240,114 @@ def add(buf, x, t, g=1.0, pan=0.0):
 
 
 def kick():
-    t = t_(.4)
-    return np.sin(2 * np.pi * np.cumsum(45 + 110 * np.exp(-t * 28)) / SR) * np.exp(-t * 9) * np.minimum(1, t / .001)
+    t = t_(.3)
+    return np.sin(2 * np.pi * np.cumsum(50 + 120 * np.exp(-t * 35)) / SR) * np.exp(-t * 12) * np.minimum(1, t / .001)
 
 
 def clap():
-    n = bp(noise(.22), 900, 4500)
+    n = bp(noise(.2), 1000, 5000)
     e = np.zeros(len(n))
-    for d in (0, .011, .022):
-        s = int(d * SR); e[s:] += np.exp(-np.arange(len(n) - s) / SR * (60 if d < .02 else 14))
-    return n * e * .5
+    for d in (0, .009, .018, .027):
+        s = int(d * SR); e[s:] += np.exp(-np.arange(len(n) - s) / SR * (70 if d < .027 else 16))
+    return n * e * .45
 
 
-def hat(open_=False):
-    d = .2 if open_ else .045
-    return hp(noise(d), 7000) * env(d, .001, curve=7 if open_ else 9) * .3
+def shaker(acc):
+    d = .07
+    return bp(noise(d), 5000, 11000) * np.sin(np.pi * np.linspace(0, 1, int(d * SR))) ** 2 * (.22 if acc else .12)
 
 
-def pluck(f, d=.45):
-    t = t_(d)
-    x = np.sin(2 * np.pi * f * t) + .35 * np.sin(2 * np.pi * f * 3.98 * t) * np.exp(-t * 25) + .15 * np.sin(2 * np.pi * f * 2 * t)
-    return x * np.exp(-t * 7) * np.minimum(1, t / .002)
+def uke(m, d=.5):
+    k = ("uke", m)
+    if k not in _cache:
+        t = t_(d); f = mf(m)
+        x = sum(np.sin(2 * np.pi * f * h * t + h) / h * np.exp(-t * (5 + h * 3.5)) for h in range(1, 9))
+        x += .15 * hp(noise(d), 3000) * np.exp(-t * 120)
+        _cache[k] = x * np.minimum(1, t / .002) * .5
+    return _cache[k]
+
+
+def glock(m, d=.7):
+    k = ("glock", m)
+    if k not in _cache:
+        t = t_(d); f = mf(m)
+        x = np.sin(2 * np.pi * f * t) * np.exp(-t * 4) + .35 * np.sin(2 * np.pi * f * 2.76 * t) * np.exp(-t * 9) + .12 * np.sin(2 * np.pi * f * 5.4 * t) * np.exp(-t * 16)
+        _cache[k] = x * np.minimum(1, t / .001)
+    return _cache[k]
 
 
 def bass(f, d):
     t = t_(d)
-    x = np.sin(2 * np.pi * f * t) + .3 * np.sin(2 * np.pi * 2 * f * t)
-    return np.tanh(1.5 * x) * np.minimum(1, t / .005) * np.exp(-t * 2.5) * np.minimum(1, (d - t) / .02)
+    x = np.sin(2 * np.pi * f * t) + .25 * np.sin(2 * np.pi * 2 * f * t)
+    return np.tanh(1.4 * x) * np.minimum(1, t / .004) * np.exp(-t * 6) * np.minimum(1, (d - t) / .015)
 
 
 def pad(chord, d):
     t = t_(d)
     x = np.zeros(len(t))
-    for m in chord[:4]:
-        for det in (-.12, .12):
-            f = mf(m + 12) * 2 ** (det / 12)
-            for h in range(1, 6):
-                x += np.sin(2 * np.pi * f * h * t + h) / h
-    x = lp(x, 1800)
-    return x * np.minimum(1, t / .4) * np.minimum(1, (d - t) / .4) / 40
+    for m in chord:
+        for det in (-.08, .08):
+            x += np.sin(2 * np.pi * mf(m) * 2 ** (det / 12) * t)
+    return lp(x, 2500) * np.minimum(1, t / .3) * np.minimum(1, (d - t) / .3) / 14
 
 
 def music():
     buf = np.zeros((N + SR, 2))
     sc = {s["id"]: s for s in TL["scenes"]}
-    calm0, calm1 = sc["rem"]["start"], sc["dot"]["start"]  # breakdown section
+    calm0, calm1 = sc["rem"]["start"], sc["dot"]["start"]  # lighter section, still bright
     tips0 = sc["tips"]["start"]
+    STRUM = [.45, .9, .2, .9, .45, .9, .3, .9]
     nbars = int(LEN / BAR) + 1
     for b in range(nbars):
         t0 = b * BAR
         ci = b % 4
-        chord, root = CHORDS[ci], ROOTS[ci]
-        intro = t0 < 2 * BAR
+        chord, root, fifth = CHORDS[ci], ROOTS[ci], FIFTHS[ci]
+        intro = b < 2
         calm = calm0 - .2 <= t0 < calm1 - BAR * .5
-        add(buf, pad(chord, BAR + .3), t0, .9 if calm else .55)
-        # plucked arpeggio, 8ths
-        pat = [0, 2, 4, 3, 1, 2, 4, 2]
+        final = t0 >= tips0
+        add(buf, pad(chord, BAR + .2), t0, .5 if calm else .3)
+        # ukulele offbeat strums (strings rolled ~10 ms)
         for k in range(8):
-            if calm and k % 2:
+            g = STRUM[k] * (.6 if calm else 1)
+            if g <= 0:
                 continue
-            add(buf, pluck(mf(chord[pat[k]] + 12)), t0 + k * BEAT / 2 + (0.018 if k % 2 else 0), .16, -.35 if k % 2 else .35)
-        if t0 >= tips0:  # sparkle bells in the finale
-            for k in (0, 3, 6):
-                add(buf, bell(mf(chord[(k + b) % 5] + 24), .6) * .5, t0 + k * BEAT / 2, .1, .5)
+            down = k % 2 == 0
+            notes = chord if down else chord[::-1]
+            for j, m in enumerate(notes):
+                add(buf, uke(m), t0 + k * BEAT / 2 + j * .009, .11 * g, (-.3 + j * .2))
+        # glockenspiel hook
+        if not intro:
+            hook = (HOOK2 if (b // 4) % 2 else HOOK)[ci]
+            for k, m in enumerate(hook):
+                if m is None:
+                    continue
+                add(buf, glock(m + (12 if final else 0)), t0 + k * BEAT / 2, .2 if not calm else .12, .25)
+                if final:
+                    add(buf, glock(m), t0 + k * BEAT / 2, .12, -.25)
+        # percussion
+        for k in range(16):
+            add(buf, shaker(k % 4 == 2), t0 + k * BEAT / 4, .8 if not intro else .5, .35)
         if intro:
-            for k in range(8):
-                add(buf, hat(), t0 + k * BEAT / 2, .25, .2)
+            for k in (1, 3):
+                add(buf, clap(), t0 + k * BEAT, .35)
             continue
         if not calm:
-            for k in range(4):
-                add(buf, kick(), t0 + k * BEAT, .75)
+            for o in (0, 1.5, 2, 3.5 if b % 2 else 3):
+                add(buf, kick(), t0 + o * BEAT, .7)
             for k in (1, 3):
-                add(buf, clap(), t0 + k * BEAT, .45, 0)
-            for k in range(8):
-                add(buf, hat(open_=(k % 4 == 3)), t0 + k * BEAT / 2 + (0.02 if k % 2 else 0), .3 if k % 2 else .2, .25)
-            for k, (o, d) in enumerate([(0, .75), (1, .5), (1.5, .4), (2, .75), (3, .4), (3.5, .4)]):
-                add(buf, bass(mf(root + (12 if k == 4 else 0)), d * BEAT * 1.1), t0 + o * BEAT, .32)
+                add(buf, clap(), t0 + k * BEAT, .5)
+            # bouncy root-fifth bass
+            for o, m in [(0, root), (1, fifth), (1.5, root + 12), (2, root), (3, fifth), (3.5, root + 12)]:
+                add(buf, bass(mf(m), BEAT * .45), t0 + o * BEAT, .3)
         else:
-            add(buf, bass(mf(root), BAR * .9), t0, .22)
-            for k in (0, 2):
-                add(buf, kick() * .6, t0 + k * BEAT, .45)
+            for k in (1, 3):
+                add(buf, clap(), t0 + k * BEAT, .3)
+            for o, m in [(0, root), (2, fifth)]:
+                add(buf, bass(mf(m), BEAT * .8), t0 + o * BEAT, .22)
+        # little cymbal-ish lift into each 4-bar phrase
+        if b % 4 == 3 and not calm:
+            add(buf, hp(noise(.4), 6000) * np.linspace(0, 1, int(.4 * SR)) ** 2 * .25, t0 + BAR - .4, .6)
     m = buf[:N]
-    # fade-in, and gentle fade right at the end (outro has its own audio)
     m[: int(.3 * SR)] *= np.linspace(0, 1, int(.3 * SR))[:, None]
     fo = int(1.2 * SR)
     m[-fo:] *= np.linspace(1, 0, fo)[:, None] ** 1.5
@@ -348,11 +390,11 @@ def main():
         if c["type"] == "scroll":
             for tt in scroll_ticks(c["t"], 6.0):
                 if tt < LEN:
-                    add(fx, sfx("tick") * .5, tt, .5, .3)
+                    add(fx, sfx("tick") * .5, tt, .34, .3)
             continue
         x = sfx(c["type"])
         pan = (rng.random() - .5) * .5
-        add(fx, x, c["t"], c["gain"] * .55, pan)
+        add(fx, x, c["t"], c["gain"] * .37, pan)
     fx = fx[:N]
 
     mix = m + fx + np.stack([v, v], 1)
