@@ -1,0 +1,44 @@
+{
+  "voice": "id-ID-ArdiNeural",
+  "rate": "+15%",
+  "pitch": "+2Hz",
+  "scenes": [
+    {
+      "id": "hook",
+      "text": "Pernah lihat anak kecil langsung menangis histeris, saat ponselnya diambil? Kenapa ya, mereka bisa sekecanduan itu?"
+    },
+    {
+      "id": "data",
+      "text": "Menurut data BPS tahun 2025, 42 persen anak usia dini di Indonesia sudah memakai ponsel. Hampir satu dari dua anak!"
+    },
+    {
+      "id": "dopamin",
+      "text": "Rahasianya ada di otak. Video lucu, suara seru, dan warna cerah memicu dopamin, zat kimia rasa senang. Otak pun minta lagi, dan lagi."
+    },
+    {
+      "id": "slot",
+      "text": "Ponsel bekerja mirip mesin slot. Setiap geser layar, kejutannya tak bisa ditebak. Justru ketidakpastian inilah yang bikin susah berhenti."
+    },
+    {
+      "id": "autoplay",
+      "text": "Ditambah fitur putar otomatis dan scroll tanpa ujung. Tidak ada titik berhenti sama sekali."
+    },
+    {
+      "id": "rem",
+      "text": "Padahal, bagian otak pengendali diri, yaitu korteks prefrontal, baru matang sekitar usia 25 tahun. Artinya, anak belum punya rem yang kuat."
+    },
+    {
+      "id": "dot",
+      "text": "Ponsel juga sering jadi dot digital. Anak rewel, kasih ponsel. Lama-lama anak belajar: bosan atau sedih, cari layar."
+    },
+    {
+      "id": "who",
+      "text": "Organisasi Kesehatan Dunia, WHO, menyarankan: di bawah 2 tahun, tanpa layar. Usia 2 sampai 4 tahun, maksimal satu jam sehari.",
+      "tts": "Organisasi Kesehatan Dunia, We Ha O, menyarankan: di bawah 2 tahun, tanpa layar. Usia 2 sampai 4 tahun, maksimal satu jam sehari."
+    },
+    {
+      "id": "tips",
+      "text": "Yuk, buat aturan waktu layar, temani saat menonton, dan ajak bermain di luar. Karena anak tidak butuh layar. Mereka butuh kita."
+    }
+  ]
+}
