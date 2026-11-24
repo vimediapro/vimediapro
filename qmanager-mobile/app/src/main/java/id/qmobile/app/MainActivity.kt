@@ -44,7 +44,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable
 private enum class PendingAction { CONNECT, TEST }
 private class CertPrompt(val info: CertInfo, val previous: CertInfo?, val action: PendingAction, val target: String)
 
