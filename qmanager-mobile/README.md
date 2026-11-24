@@ -1,4 +1,4 @@
-# QManager Mobile 0.3.1 — Android native prototype
+# QManager Mobile 0.3.2 — Android native prototype
 
 Independent Kotlin / Jetpack Compose client, not an official QManager release. No WebView, no modem-side installation. Uses the existing CGI-compatible API documented at https://github.com/dr-dolomite/QManager-RM520N/blob/main/docs/API-REFERENCE.md . QManager-GO compatibility and RG501Q-EU / RG520N-EU support depend on the installed backend and have not been tested on hardware. No upstream implementation code is bundled.
 
@@ -31,7 +31,7 @@ HTTP is enabled for user-entered modem addresses and is **unencrypted**; use onl
 If the endpoint returns JSON, note its behavior; a 401 for status indicates authentication is required. Avoid sharing passwords, cookies, IMEI, IMSI, ICCID, phone numbers and IP addresses from status responses. If the URL redirects or returns HTML, identify the QManager repository/version and API prefix before modifying the app.
 
 ## Validation status
-The debug APK compiles and is built by GitHub Actions (workflow `QManager Mobile APK`). No emulator/device or modem hardware tests have been run. Verify login, status, AT output and disconnect on the actual backend before relying on this client.
+The debug APK compiles and is built by GitHub Actions (workflow `QManager Mobile APK`), which also runs the JVM unit tests (`:app:testDebugUnitTest`) for the APN / Network Mode / AT / redaction parsers. No emulator/device or modem hardware tests have been run. Verify login, status, AT output and disconnect on the actual backend before relying on this client.
 
 ## Native network management (v0.2.0)
 Open Network, choose Band / Cell / APN, then Baca / Refresh konfigurasi. A successful configuration read is required before editing. All writes require confirmation and are followed by a readback after a five-second settling delay. A successful backend acknowledgement is not proof of a matching modem state; compare the returned values. No automatic write retry. Dashboard polling pauses during management requests. The request client serializes requests per session.
@@ -73,3 +73,35 @@ Fixes `CertPathValidatorException: Trust anchor for certification path not found
 `openssl x509 -in /path/to/server.crt -noout -fingerprint -sha256`
 
 See `CHANGELOG.md`.
+
+
+## v0.3.2 — APN & Network Mode compatibility (RG501Q-EU, RG520N-EU, RM520N-GL)
+Fixes `Gagal membaca: parse_failed: Could not assemble WAN profile list` (APN) and `Gagal membaca: Format network mode tidak didukung` (Network Mode).
+
+**Root cause (compared against dr-dolomite/QManager-RM520N and dr-dolomite/QManager source):**
+- `cellular/apn.sh` (RM520N-GL backend) builds the profile list from `AT+CGDCONT?`, `AT+CGACT?`, `AT+QICSGP=<cid>` via `jq`; when assembling fails it returns `{"success":false,"error":"parse_failed"}`. The main QManager repo (RM551E) uses a different v2 slot contract (`profiles[5]` with `id`, plus `cids[]`).
+- `cellular/settings.sh` actually returns `{"success":true,"settings":{"mode_pref":…,"nr5g_mode":…}}` and its POST reads `nr5g_mode`, while API-REFERENCE.md documents top-level `mode_pref` / `nr5g_disable_mode`. v0.3.0/0.3.1 only read the documented shape (→ "format tidak didukung") and wrote only `nr5g_disable_mode` (ignored by that backend).
+
+**Compatibility layer (`Compat.kt`, `ModemGateway`):**
+- READ: official endpoint first; on HTTP error, non-JSON, `success:false` (e.g. `parse_failed`) or unknown format → **AT Command Fallback** through `at_cmd/send_command.sh` using read-only queries only.
+- WRITE: uses the same path as the last verified read. No automatic write fallback after a POST failure/timeout. Every write is followed by a read-back (5 s settle) and compared.
+- UI shows **Data source: QManager API / AT Command Fallback** with the reason.
+- Opening or refreshing pages never changes modem configuration.
+
+**APN:**
+- AT read: `AT+CGDCONT?` (CID, PDP type, APN), `AT+CGACT?` (activation), `AT+CGPADDR` (IP), capability probes `AT+QICSGP=?` / `AT+CGAUTH=?`, then `AT+QICSGP=<cid>` (auth type, username, password presence — the password itself is never shown or logged) or `AT+CGAUTH?`.
+- Tolerant parser: quoted CSV with commas, empty fields, missing columns, any number of contexts, JSON-escaped `\r\n`. Missing info shown as **Unknown**.
+- IMS and Emergency/SOS profiles (by APN/type) and CID 2/3 are read-only.
+- AT write (only when the read came from AT): `AT+QICSGP` (if supported; blank password keeps the stored one) or `AT+CGDCONT` + `AT+CGAUTH`; optional re-registration `AT+COPS=2` → `AT+COPS=0` so the new APN is negotiated (same approach as the backend). Auth cannot be changed when neither QICSGP nor CGAUTH is supported. Toggle uses `AT+CGACT`.
+- API write (when apn.sh is compatible): unchanged legacy `save` / `toggle` contract.
+
+**Network Mode:**
+- Parses `settings.mode_pref` / `settings.nr5g_mode` (RM520N code), top-level `mode_pref` / `nr5g_disable_mode` (docs), `data{}` wrappers, numeric strings and any key capitalisation. `cellular/network_priority.sh` (`rat_acq_order`) is shown as information only.
+- AT fallback: `AT+QNWPREFCFG="mode_pref"`, `AT+QNWPREFCFG="nr5g_disable_mode"`, capability `AT+QNWPREFCFG=?`.
+- `LTE:NR5G` and `NR5G:LTE` both map to the same preset; the existing priority order is preserved on write when the RAT set is unchanged.
+- If `nr5g_disable_mode` is not supported, the read mode preference is still shown and NSA / SA-only options are disabled. Options needing NR5G are disabled on non-5G models (ATI) or when the firmware capability list lacks NR5G.
+- API write sends `mode_pref` plus `nr5g_mode` **and** `nr5g_disable_mode` (same value) for both backend variants; AT write sends `nr5g_disable_mode` then `mode_pref`.
+
+**Settings > Diagnostics:** model (`ATI`), firmware (`AT+QGMR`), backend contract hints (backend version is not exposed by read-only endpoints; the OTA check is deliberately not called), endpoint compatibility with HTTP status, redacted raw responses, and **Copy Diagnostic Report**. Redaction removes passwords, session cookies, IMEI, IMSI, ICCID, phone numbers, SMS content, APN usernames and public IP addresses. `AT+QICSGP=<cid>` output is never recorded.
+
+Preserved: HTTPS self-signed certificate handling (v0.3.1), Dashboard, Band Lock, Cell Lock, SMS, AT Tools, multi-modem profiles, UI/theme.

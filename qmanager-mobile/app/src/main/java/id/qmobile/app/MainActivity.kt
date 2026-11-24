@@ -44,6 +44,8 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@Suppress("DEPRECATION") private fun android.content.pm.PackageInfo.longVersionCodeCompat(): Long = if (android.os.Build.VERSION.SDK_INT >= 28) longVersionCode else versionCode.toLong()
+
 private enum class PendingAction { CONNECT, TEST }
 private class CertPrompt(val info: CertInfo, val previous: CertInfo?, val action: PendingAction, val target: String)
 
@@ -58,6 +60,11 @@ private fun Mobile() {
     var saved by remember { mutableStateOf(prefs.getStringSet("hosts", emptySet())!!.toList().sorted()) }
     var password by remember { mutableStateOf("") }
     var api by remember { mutableStateOf<Api?>(null) }
+    val gateway = remember(api) { api?.let { ModemGateway(it) } }
+    var settingsPage by remember { mutableIntStateOf(0) }
+    val appVersion = remember {
+        try { context.packageManager.getPackageInfo(context.packageName, 0).let { "${it.versionName} (${it.longVersionCodeCompat()})" } } catch (_: Exception) { "unknown" }
+    }
     var host by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<JSONObject?>(null) }
     var error by remember { mutableStateOf("") }
@@ -182,6 +189,14 @@ private fun Mobile() {
             if (error.isNotEmpty()) Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF452A25))) { Text(error, Modifier.padding(12.dp), color = Color(0xFFFFC7B7)) }
             if (status != null && !online) Text("Data terakhir (tidak live).", color = Muted)
             if (tab == 3 || api == null) {
+                val diagGateway = gateway
+                if (diagGateway != null && tab == 3) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = settingsPage == 0, onClick = { settingsPage = 0 }, label = { Text("Koneksi") }, enabled = !sending && !busy)
+                    FilterChip(selected = settingsPage == 1, onClick = { settingsPage = 1 }, label = { Text("Diagnostics") }, enabled = !sending && !busy)
+                }
+                if (diagGateway != null && tab == 3 && settingsPage == 1) {
+                    key(diagGateway) { DiagnosticsPanel(diagGateway, "${diagGateway.api.transportLabel} • ${diagGateway.api.base.scheme}://${diagGateway.api.base.host}:${diagGateway.api.base.port}", appVersion, sending || busy, { sending = it }, { sessionEnded(diagGateway.api) }) }
+                } else {
                 Panel("Koneksi modem") {
                     if (api != null) Text("Terhubung ke $host", color = Mint)
                     OutlinedTextField(address, { address = it }, label = { Text("IP / URL QManager") }, singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !busy && !sending)
@@ -226,6 +241,7 @@ private fun Mobile() {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf(3L, 5L, 10L).forEach { n -> FilterChip(selected = interval == n, onClick = { interval = n }, label = { Text("${n}s") }) } }
                     Text("Polling berhenti ketika aplikasi tidak aktif. Password tidak disimpan.", style = MaterialTheme.typography.bodySmall, color = Muted)
                 }
+                }
             } else if (tab == 0 || tab == 1) {
                 val data = status
                 val network = data?.optJSONObject("network")
@@ -252,7 +268,7 @@ private fun Mobile() {
                 } else {
                     Panel("Connection details") { Detail("APN", network.value("apn")); Detail("WAN IPv4", network.value("wan_ipv4")); Detail("WAN IPv6", network.value("wan_ipv6")); Detail("DNS", network.value("primary_dns")); Detail("CA", network.value("bandwidth_details")); Detail("LTE PCI / EARFCN", "${lte.value("pci")} / ${lte.value("earfcn")}"); Detail("NR PCI / ARFCN", "${nr.value("pci")} / ${nr.value("arfcn")}") }
                     val activeApi = api
-                    if (activeApi != null) key(activeApi) { NetworkControls(activeApi, data, sending, { sending = it }, { sessionEnded(activeApi) }) }
+                    if (activeApi != null) key(activeApi) { NetworkControls(activeApi, gateway ?: ModemGateway(activeApi), data, sending, { sending = it }, { sessionEnded(activeApi) }) }
                 }
             } else if (tab == 4) {
                 val activeApi = api

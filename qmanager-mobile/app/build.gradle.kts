@@ -6,7 +6,7 @@ plugins {
 android {
     namespace = "id.qmobile.app"
     compileSdk = 35
-    defaultConfig { applicationId = "id.qmobile.app"; minSdk = 26; targetSdk = 35; versionCode = 4; versionName = "0.3.1" }
+    defaultConfig { applicationId = "id.qmobile.app"; minSdk = 26; targetSdk = 35; versionCode = 5; versionName = "0.3.2" }
     buildFeatures { compose = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
@@ -20,4 +20,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

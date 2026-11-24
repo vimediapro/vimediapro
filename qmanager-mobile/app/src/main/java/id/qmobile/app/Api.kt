@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit
 class Api(address: String, private val pinned: CertInfo? = null) {
     val base: HttpUrl = parseModemUrl(address)
     val isHttps: Boolean get() = base.isHttps
+    val transportLabel: String get() = if (!base.isHttps) "HTTP (cleartext)" else if (pinned != null) "HTTPS (self-signed, fingerprint pinned)" else "HTTPS (Strict SSL)"
     /** True jika handshake menemukan fingerprint yang berbeda dari yang disetujui; koneksi dihentikan. */
     @Volatile var certificateChanged = false
         private set
@@ -46,25 +47,30 @@ class Api(address: String, private val pinned: CertInfo? = null) {
             "Koneksi OK via $tls. Server merespons HTTP ${r.code}$note."
         }
     } } }
-    suspend fun request(path: String, body: JSONObject? = null): JSONObject = lock.withLock { withContext(Dispatchers.IO) { guarded {
+    /** Respons mentah (status HTTP + body). 401/403 tetap dilempar sebagai AuthRequired. */
+    suspend fun rawRequest(path: String, body: JSONObject? = null): RawResponse = lock.withLock { withContext(Dispatchers.IO) { guarded {
         val url = base.newBuilder().addPathSegments("cgi-bin/quecmanager/$path").build()
         val builder = Request.Builder().url(url).header("Accept", "application/json")
         if (body != null) builder.post(body.toString().toRequestBody("application/json".toMediaType()))
         client.newCall(builder.build()).execute().use { response ->
             if (response.code == 401 || response.code == 403) throw AuthRequired()
-            if (response.code in 300..399) error("Server mengalihkan permintaan. Gunakan URL HTTPS yang dipercaya atau periksa konfigurasi modem.")
-            if (!response.isSuccessful) error("HTTP ${response.code} — periksa versi QManager")
-            val raw = response.body?.string() ?: error("Respons kosong")
-            val json = try { JSONObject(raw) } catch (_: Exception) { error("Respons bukan JSON QManager. Periksa alamat dan versi backend.") }
-            if (json.has("success") && !json.optBoolean("success")) error(json.value("error", "Permintaan gagal") + ": " + json.value("detail", "Periksa konfigurasi modem"))
-            json
+            RawResponse(path, if (body == null) "GET" else "POST", response.code, response.body?.string().orEmpty())
         }
     } } }
+    suspend fun request(path: String, body: JSONObject? = null): JSONObject {
+        val r = rawRequest(path, body)
+        if (r.code in 300..399) error("Server mengalihkan permintaan. Gunakan URL HTTPS yang dipercaya atau periksa konfigurasi modem.")
+        if (r.code !in 200..299) error("HTTP ${r.code} — periksa versi QManager")
+        val json = jsonOrNull(r.body) ?: error("Respons bukan JSON QManager. Periksa alamat dan versi backend.")
+        if (json.has("success") && !json.optBoolean("success")) error(json.value("error", "Permintaan gagal") + ": " + json.value("detail", "Periksa konfigurasi modem"))
+        return json
+    }
     suspend fun login(password: String) { request("auth/login.sh", JSONObject().put("password", password)) }
     suspend fun logout() { try { request("auth/logout.sh", JSONObject()) } finally { jar.clear() } }
     suspend fun status(): JSONObject = request("at_cmd/fetch_data.sh").also { require(it.has("network") || it.has("device") || it.has("lte") || it.has("nr")) { "Format data modem tidak dikenal." } }
     suspend fun command(command: String): String = request("at_cmd/send_command.sh", JSONObject().put("command", command)).value("response", "Tidak ada output AT pada respons")
 }
+data class RawResponse(val path: String, val method: String, val code: Int, val body: String)
 open class AuthRequired(message: String = "Login QManager diperlukan atau sesi berakhir") : Exception(message)
 class CertificateChanged(val host: String, val port: Int) : AuthRequired("Fingerprint sertifikat HTTPS $host:$port berubah. Koneksi dihentikan sebelum data dikirim; verifikasi ulang sertifikat.")
 const val CERT_CHANGED_MESSAGE = "Fingerprint sertifikat HTTPS modem berubah. Koneksi dihentikan; tekan Connect untuk verifikasi ulang sertifikat."
