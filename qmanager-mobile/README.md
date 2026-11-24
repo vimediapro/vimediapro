@@ -1,4 +1,4 @@
-# QManager Mobile 0.3.0 — Android native prototype
+# QManager Mobile 0.3.1 — Android native prototype
 
 Independent Kotlin / Jetpack Compose client, not an official QManager release. No WebView, no modem-side installation. Uses the existing CGI-compatible API documented at https://github.com/dr-dolomite/QManager-RM520N/blob/main/docs/API-REFERENCE.md . QManager-GO compatibility and RG501Q-EU / RG520N-EU support depend on the installed backend and have not been tested on hardware. No upstream implementation code is bundled.
 
@@ -15,7 +15,7 @@ Independent Kotlin / Jetpack Compose client, not an official QManager release. N
 ## Usage
 Connect Android to the modem network (or trusted VPN with modem routing). Start app, enter e.g. `http://192.168.225.1` plus existing QManager password if required. No first-time QManager password setup is implemented. Saved profiles store addresses only. Passwords and cookies stay in memory. Switch profiles by selecting a saved address then connecting again. Polling pauses in background; last data is marked offline after request failures. AT console requires explicit confirmation. No fake live data.
 
-HTTP is enabled for user-entered modem addresses and is **unencrypted**; use only on trusted LAN or encrypted VPN. HTTPS uses standard Android certificate validation; self-signed untrusted certs will fail. Redirects are not followed. No certificate bypass. Do not expose QManager on the public internet.
+HTTP is enabled for user-entered modem addresses and is **unencrypted**; use only on trusted LAN or encrypted VPN. HTTP is never upgraded to HTTPS automatically (and vice versa). HTTPS defaults to Strict SSL (standard Android validation); self-signed modem certificates can be trusted per profile after fingerprint verification — see v0.3.1 below. Redirects are not followed. No global trust-all. Do not expose QManager on the public internet.
 
 ## API contract / scope
 - POST `auth/login.sh` with password; session cookies in memory.
@@ -31,7 +31,7 @@ HTTP is enabled for user-entered modem addresses and is **unencrypted**; use onl
 If the endpoint returns JSON, note its behavior; a 401 for status indicates authentication is required. Avoid sharing passwords, cookies, IMEI, IMSI, ICCID, phone numbers and IP addresses from status responses. If the URL redirects or returns HTML, identify the QManager repository/version and API prefix before modifying the app.
 
 ## Validation status
-Source project authored for this request; Android SDK and Gradle are unavailable in the creation environment, so no APK has been built and no emulator/device tests have been run. GitHub Actions workflow is provided but has not run. Verify login, status, AT output and disconnect on the actual backend before relying on this client.
+The debug APK compiles and is built by GitHub Actions (workflow `QManager Mobile APK`). No emulator/device or modem hardware tests have been run. Verify login, status, AT output and disconnect on the actual backend before relying on this client.
 
 ## Native network management (v0.2.0)
 Open Network, choose Band / Cell / APN, then Baca / Refresh konfigurasi. A successful configuration read is required before editing. All writes require confirmation and are followed by a readback after a five-second settling delay. A successful backend acknowledgement is not proof of a matching modem state; compare the returned values. No automatic write retry. Dashboard polling pauses during management requests. The request client serializes requests per session.
@@ -51,3 +51,25 @@ On local Wi-Fi, verify login, then read each of the three tabs without writing. 
 - SMS tab > Refresh to load messages. Inbox/Sent/All, search, pagination, selectable text, compose, reply to numeric senders, forward, per-message delete. Uses GET/POST `cellular/sms.sh` with the documented `send` and storage-aware `delete` payloads. Messages are not persisted by the Android client. No Android SMS permissions; SMS travels via the modem's SIM, and operator charges apply. Sent log availability depends on backend. Deletion is permanent; fresh read checks the selected record before deleting, but concurrent modem writes remain a potential race. No bulk delete, background polling, unread synchronization, SMSC editing or automatic forwarding. Single-part message limit intentionally conservative (160 characters in a basic GSM subset, otherwise 70 UTF-16 units). No automatic resend on ambiguous failure. Refresh manually after arrival; a successful send response is not a delivery receipt.
 - Verify mode read, then test Auto/LTE/NSA/SA with known network coverage, restore original configuration. Read SMS first, send to a trusted test number, verify on receiving handset and check sent log; delete only a disposable test message. On error or timeout read back before retrying. Some modem/fork combinations have different schemas or unsupported SMS transport.
 - References: https://github.com/dr-dolomite/QManager-RM520N/blob/main/docs/API-REFERENCE.md ; https://github.com/dr-dolomite/QManager-RM520N/blob/main/docs/reference/sms.md ; https://github.com/dr-dolomite/QManager-RM520N/blob/main/types/sms.ts . Source only; not compiled, no Android SDK/Gradle/device available.
+
+
+## v0.3.1 — HTTPS / self-signed certificate support
+Fixes `CertPathValidatorException: Trust anchor for certification path not found` when connecting to `https://192.168.225.1` (QManager on Quectel uses a self-signed certificate).
+
+**Pengaturan (tab Settings > Koneksi modem):**
+- Alamat tanpa skema = `http://`. `http://` dan `https://` dipakai apa adanya; tidak ada upgrade/downgrade otomatis. Port kustom didukung (mis. `https://192.168.225.1:8443`).
+- **SSL Certificate Mode**: `Strict SSL` (default, validasi Android standar) atau `Trust Self-Signed Certificate`. Hanya berlaku untuk `https://`. Mode disimpan per profil.
+- Mode self-signed: saat Connect / Test Connection pertama, aplikasi membaca sertifikat server (handshake dihentikan, **tidak ada password/cookie yang dikirim**) dan menampilkan dialog berisi hostname:port, fingerprint SHA-256, subject, issuer, dan masa berlaku. Login baru dilakukan setelah pengguna menekan *Percayai & lanjutkan*.
+- Sertifikat yang disetujui disimpan per profil berdasarkan hostname + port + fingerprint SHA-256 (SharedPreferences `trusted_certs`, private app storage, tidak ikut backup).
+- HTTP client profil itu memakai TrustManager yang **hanya** menerima fingerprint tersebut. Hostname mismatch (sertifikat modem tidak memuat IP lokal) hanya ditoleransi bila host sama persis dengan host profil **dan** fingerprint leaf cocok. Verifikasi hostname standar tetap dicoba lebih dulu. Tidak ada TrustAllCerts atau HostnameVerifier yang selalu `true`.
+- Jika fingerprint berubah: handshake ditolak sebelum data terkirim, sesi diputus, lalu dialog peringatan "Sertifikat modem BERUBAH" menampilkan fingerprint lama dan baru untuk konfirmasi ulang.
+- **Test Connection**: GET `auth/check.sh` tanpa login/password; melaporkan jenis koneksi (HTTP / HTTPS strict / HTTPS pinned) dan kode HTTP.
+- **Reset Trusted Certificate**: menghapus sertifikat tepercaya untuk host:port saat ini (sesi aktif ke host itu ditutup). Menghapus profil tersimpan juga menghapus sertifikatnya.
+- Pesan error SSL/jaringan dibuat jelas: sertifikat tidak dipercaya (saran pindah mode), kedaluwarsa/belum berlaku, hostname mismatch, TLS gagal/port salah, timeout, host tidak terjangkau.
+- `res/xml/network_security_config.xml`: cleartext HTTP diizinkan (alamat modem bebas diisi pengguna), trust anchor hanya CA sistem.
+- Semua endpoint (dashboard, AT, Band/Cell lock, APN, Network Mode, SMS, login/logout) memakai satu HTTP client per profil sehingga konfigurasi SSL selalu konsisten.
+
+**Cara verifikasi fingerprint di modem** (via SSH/ADB shell, sesuaikan path sertifikat lighttpd/QManager):
+`openssl x509 -in /path/to/server.crt -noout -fingerprint -sha256`
+
+See `CHANGELOG.md`.

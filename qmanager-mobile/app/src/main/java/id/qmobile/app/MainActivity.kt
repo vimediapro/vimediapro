@@ -8,6 +8,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -43,8 +45,14 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
+private enum class PendingAction { CONNECT, TEST }
+private class CertPrompt(val info: CertInfo, val previous: CertInfo?, val action: PendingAction, val target: String)
+
+@Composable
 private fun Mobile() {
-    val prefs = LocalContext.current.getSharedPreferences("modems", 0)
+    val context = LocalContext.current
+    val prefs = context.getSharedPreferences("modems", 0)
+    val trust = remember { TrustStore(context) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val scope = rememberCoroutineScope()
     var address by remember { mutableStateOf(prefs.getString("last", "http://192.168.225.1") ?: "http://192.168.225.1") }
@@ -66,6 +74,10 @@ private fun Mobile() {
     var confirm by remember { mutableStateOf<String?>(null) }
     var download by remember { mutableStateOf<List<Float>>(emptyList()) }
     var upload by remember { mutableStateOf<List<Float>>(emptyList()) }
+    var sslMode by remember { mutableStateOf(SslMode.of(prefs.getString("ssl|$address", null))) }
+    var certPrompt by remember { mutableStateOf<CertPrompt?>(null) }
+    var testResult by remember { mutableStateOf("") }
+    var trustRevision by remember { mutableIntStateOf(0) }
     fun update(data: JSONObject) {
         status = data; online = true; error = ""
         lastUpdate = java.text.SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(java.util.Date())
@@ -73,19 +85,63 @@ private fun Mobile() {
         traffic.number("rx_bytes_per_sec")?.let { download = (download + (it * 8 / 1_000_000).toFloat()).takeLast(48) }
         traffic.number("tx_bytes_per_sec")?.let { upload = (upload + (it * 8 / 1_000_000).toFloat()).takeLast(48) }
     }
-    fun connect() {
-        if (busy || sending) return
-        val target = address.trim(); val secret = password
-        busy = true; error = ""; online = false; api = null; status = null; output = ""; toolError = ""; download = emptyList(); upload = emptyList(); lastUpdate = ""
+    fun sessionEnded(current: Api?) {
+        val changed = current?.certificateChanged == true
+        api = null; online = false; status = null; tab = 3
+        error = if (changed) CERT_CHANGED_MESSAGE else "Sesi berakhir. Login kembali."
+    }
+    // Ambil sertifikat server (tanpa mengirim data) dan minta konfirmasi pengguna.
+    suspend fun promptCertificate(action: PendingAction, target: String, url: okhttp3.HttpUrl, previous: CertInfo?) {
+        certPrompt = CertPrompt(fetchServerCertificate(url), previous, action, target)
+    }
+    fun perform(action: PendingAction, target: String, url: okhttp3.HttpUrl, pinned: CertInfo?) {
+        val secret = password
+        busy = true; error = ""; testResult = ""
+        if (action == PendingAction.CONNECT) { online = false; api = null; status = null; output = ""; toolError = ""; download = emptyList(); upload = emptyList(); lastUpdate = "" }
         scope.launch {
             try {
-                val candidate = Api(target)
-                if (secret.isNotEmpty()) candidate.login(secret)
-                val data = candidate.status()
-                host = target; api = candidate; update(data); password = ""; tab = 0
-                saved = (saved + target).distinct().sorted(); prefs.edit().putString("last", target).putStringSet("hosts", saved.toSet()).apply()
-            } catch (e: CancellationException) { throw e } catch (e: Exception) { error = e.message ?: "Koneksi gagal" } finally { busy = false }
+                val candidate = Api(target, pinned)
+                if (action == PendingAction.TEST) {
+                    testResult = candidate.testConnection()
+                } else {
+                    if (secret.isNotEmpty()) candidate.login(secret)
+                    val data = candidate.status()
+                    host = target; api = candidate; update(data); password = ""; tab = 0
+                    saved = (saved + target).distinct().sorted()
+                    prefs.edit().putString("last", target).putStringSet("hosts", saved.toSet()).putString("ssl|$target", sslMode.key).apply()
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: CertificateChanged) {
+                error = e.message.orEmpty()
+                try { promptCertificate(action, target, url, trust.get(url.host, url.port)) }
+                catch (x: CancellationException) { throw x } catch (x: Exception) { error = x.message ?: "Gagal membaca sertifikat" }
+            }
+            catch (e: Exception) { error = e.message ?: "Koneksi gagal" }
+            finally { busy = false }
         }
+    }
+    fun start(action: PendingAction) {
+        if (busy || sending) return
+        val target = address.trim()
+        val url = try { parseModemUrl(target) } catch (e: Exception) { error = e.message ?: "Alamat tidak valid"; return }
+        if (!url.isHttps || sslMode == SslMode.STRICT) { perform(action, target, url, null); return }
+        val stored = trust.get(url.host, url.port)
+        if (stored != null) { perform(action, target, url, stored); return }
+        busy = true; error = ""; testResult = ""
+        scope.launch {
+            try { promptCertificate(action, target, url, null) }
+            catch (e: CancellationException) { throw e } catch (e: Exception) { error = e.message ?: "Gagal membaca sertifikat" }
+            finally { busy = false }
+        }
+    }
+    fun connect() = start(PendingAction.CONNECT)
+    fun resetCertificate() {
+        val url = try { parseModemUrl(address) } catch (e: Exception) { error = e.message ?: "Alamat tidak valid"; return }
+        trust.remove(url.host, url.port); trustRevision++
+        val current = api
+        if (current != null && current.base.host.equals(url.host, true) && current.base.port == url.port) { api = null; online = false; status = null }
+        error = ""
+        testResult = "Sertifikat tepercaya untuk ${url.host}:${url.port} dihapus. Verifikasi ulang akan diminta saat Connect."
     }
     fun send(text: String) {
         val current = api ?: return
@@ -131,8 +187,26 @@ private fun Mobile() {
                     if (api != null) Text("Terhubung ke $host", color = Mint)
                     OutlinedTextField(address, { address = it }, label = { Text("IP / URL QManager") }, singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !busy && !sending)
                     OutlinedTextField(password, { password = it }, label = { Text("Password QManager (jika diperlukan)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), enabled = !busy && !sending)
-                    Text("HTTP hanya untuk LAN tepercaya atau tunnel VPN. HTTPS harus memakai sertifikat yang dipercaya Android.", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    val parsed = remember(address) { try { parseModemUrl(address) } catch (_: Exception) { null } }
+                    Text("SSL Certificate Mode", style = MaterialTheme.typography.labelLarge)
+                    SslMode.entries.forEach { mode ->
+                        Row(Modifier.fillMaxWidth().selectable(selected = sslMode == mode, enabled = !busy && !sending, role = Role.RadioButton, onClick = { sslMode = mode; testResult = "" }), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = sslMode == mode, onClick = null, enabled = !busy && !sending)
+                            Text(mode.label, Modifier.padding(start = 8.dp))
+                        }
+                    }
+                    if (parsed != null && !parsed.isHttps) Text("HTTP: password dan data dikirim tanpa enkripsi. Gunakan hanya di LAN tepercaya atau tunnel VPN. Mode SSL tidak berlaku untuk http://", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    else if (sslMode == SslMode.STRICT) Text("Strict SSL: sertifikat HTTPS harus dipercaya Android. Sertifikat self-signed modem akan ditolak.", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    else {
+                        val stored = remember(parsed, trustRevision) { parsed?.let { trust.get(it.host, it.port) } }
+                        Text(if (stored != null) "Sertifikat tepercaya untuk ${stored.host}:${stored.port}\nSHA-256 ${stored.sha256.take(23)}…  •  berlaku s/d ${formatCertDate(stored.notAfter)}" else "Belum ada sertifikat tepercaya. Fingerprint akan ditampilkan untuk diverifikasi sebelum password dikirim.", color = if (stored != null) Mint else Muted, style = MaterialTheme.typography.bodySmall)
+                    }
                     Button(onClick = { connect() }, enabled = !busy && !sending && address.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (busy) "Menghubungkan…" else "Connect / Login") }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { start(PendingAction.TEST) }, enabled = !busy && !sending && address.isNotBlank(), modifier = Modifier.weight(1f)) { Text("Test Connection") }
+                        OutlinedButton(onClick = { resetCertificate() }, enabled = !busy && !sending && parsed?.isHttps == true, modifier = Modifier.weight(1f)) { Text("Reset Trusted Certificate") }
+                    }
+                    if (testResult.isNotEmpty()) Text(testResult, color = Mint, style = MaterialTheme.typography.bodySmall)
                     if (api != null) OutlinedButton(enabled = !busy && !sending, onClick = {
                         val current = api ?: return@OutlinedButton
                         api = null; online = false; status = null; download = emptyList(); upload = emptyList(); output = ""; toolError = ""; error = ""; busy = true
@@ -141,8 +215,12 @@ private fun Mobile() {
                 }
                 if (saved.isNotEmpty()) Panel("Profil tersimpan") {
                     saved.forEach { entry -> Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = { address = entry; password = "" }, modifier = Modifier.weight(1f), enabled = !busy && !sending) { Text(entry) }
-                        TextButton(onClick = { saved = saved - entry; prefs.edit().putStringSet("hosts", saved.toSet()).apply() }, enabled = !busy) { Text("Hapus") }
+                        TextButton(onClick = { address = entry; password = ""; sslMode = SslMode.of(prefs.getString("ssl|$entry", null)); testResult = "" }, modifier = Modifier.weight(1f), enabled = !busy && !sending) { Text(entry) }
+                        TextButton(onClick = {
+                            saved = saved - entry; prefs.edit().putStringSet("hosts", saved.toSet()).remove("ssl|$entry").apply()
+                            try { parseModemUrl(entry).let { u -> if (saved.none { other -> try { parseModemUrl(other).let { it.host.equals(u.host, true) && it.port == u.port } } catch (_: Exception) { false } }) trust.remove(u.host, u.port) } } catch (_: Exception) {}
+                            trustRevision++
+                        }, enabled = !busy && !sending) { Text("Hapus") }
                     } }
                 }
                 Panel("Refresh dashboard") {
@@ -175,11 +253,11 @@ private fun Mobile() {
                 } else {
                     Panel("Connection details") { Detail("APN", network.value("apn")); Detail("WAN IPv4", network.value("wan_ipv4")); Detail("WAN IPv6", network.value("wan_ipv6")); Detail("DNS", network.value("primary_dns")); Detail("CA", network.value("bandwidth_details")); Detail("LTE PCI / EARFCN", "${lte.value("pci")} / ${lte.value("earfcn")}"); Detail("NR PCI / ARFCN", "${nr.value("pci")} / ${nr.value("arfcn")}") }
                     val activeApi = api
-                    if (activeApi != null) key(activeApi) { NetworkControls(activeApi, data, sending, { sending = it }, { api = null; online = false; status = null; error = "Sesi berakhir. Login kembali."; tab = 3 }) }
+                    if (activeApi != null) key(activeApi) { NetworkControls(activeApi, data, sending, { sending = it }, { sessionEnded(activeApi) }) }
                 }
             } else if (tab == 4) {
                 val activeApi = api
-                if (activeApi != null) key(activeApi) { SmsCenter(activeApi, sending, { sending = it }, { api = null; online = false; status = null; error = "Sesi berakhir. Login kembali."; tab = 3 }) }
+                if (activeApi != null) key(activeApi) { SmsCenter(activeApi, sending, { sending = it }, { sessionEnded(activeApi) }) }
             } else if (tab == 2) {
                 Panel("AT Command") {
                     Text("Perintah diagnosis tersedia sebagai preset. Perintah lain dapat mengubah konfigurasi atau memutus koneksi modem.", color = Muted)
@@ -192,7 +270,42 @@ private fun Mobile() {
             }
         }
     }
+    certPrompt?.let { prompt -> CertificateDialog(prompt, onTrust = {
+        certPrompt = null
+        trust.save(prompt.info); trustRevision++
+        prefs.edit().putString("ssl|${prompt.target}", SslMode.SELF_SIGNED.key).apply()
+        error = ""
+        val url = try { parseModemUrl(prompt.target) } catch (_: Exception) { null }
+        if (url != null) perform(prompt.action, prompt.target, url, prompt.info)
+    }, onCancel = { certPrompt = null; if (prompt.previous != null) error = CERT_CHANGED_MESSAGE }) }
     confirm?.let { text -> AlertDialog(onDismissRequest = { confirm = null }, title = { Text("Jalankan AT Command?") }, text = { Text("$text\n\nPerintah dapat memengaruhi koneksi modem.") }, confirmButton = { TextButton(onClick = { confirm = null; send(text) }) { Text("Execute") } }, dismissButton = { TextButton(onClick = { confirm = null }) { Text("Batal") } }) }
+}
+
+@Composable private fun CertificateDialog(prompt: CertPrompt, onTrust: () -> Unit, onCancel: () -> Unit) {
+    val info = prompt.info
+    val warn = Color(0xFFFFC7B7)
+    AlertDialog(onDismissRequest = onCancel,
+        title = { Text(if (prompt.previous != null) "Sertifikat modem BERUBAH" else "Verifikasi sertifikat HTTPS") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (prompt.previous != null) Text("Fingerprint berbeda dari yang pernah Anda setujui. Ini wajar setelah reset/upgrade firmware, tetapi juga bisa tanda penyadapan. Lanjutkan hanya jika Anda yakin.\nSebelumnya: ${prompt.previous.sha256}", color = warn)
+                Text("Password belum dikirim. Cocokkan fingerprint dengan sertifikat di modem sebelum mempercayainya.", color = Muted, style = MaterialTheme.typography.bodySmall)
+                SelectionContainer { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CertLine("Hostname", "${info.host}:${info.port}")
+                    CertLine("SHA-256", info.sha256)
+                    CertLine("Subject", info.subject.ifBlank { "—" })
+                    CertLine("Issuer", info.issuer.ifBlank { "—" } + if (info.selfSigned) " (self-signed)" else "")
+                    CertLine("Berlaku", "${formatCertDate(info.notBefore)} s/d ${formatCertDate(info.notAfter)}")
+                } }
+                if (info.expired) Text("Sertifikat sudah kedaluwarsa.", color = warn)
+                if (info.notYetValid) Text("Sertifikat belum berlaku — periksa jam ponsel/modem.", color = warn)
+            }
+        },
+        confirmButton = { TextButton(onClick = onTrust) { Text("Percayai & lanjutkan") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Batal") } })
+}
+@Composable private fun CertLine(label: String, value: String) {
+    Column { Text(label, color = Muted, style = MaterialTheme.typography.labelMedium); Text(value, style = MaterialTheme.typography.bodySmall) }
 }
 
 @Composable internal fun Panel(title: String, content: @Composable ColumnScope.() -> Unit) {
